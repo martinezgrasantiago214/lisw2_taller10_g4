@@ -1,0 +1,20 @@
+{"title": "Secuencia: autenticacion con Keycloak y autorizacion con JWT (defensa en profundidad)",
+ "participants": ["Frontend Swing", "Keycloak", "API Gateway", "review-service", "user-service"],
+ "messages": [
+  {"from": "Frontend Swing", "to": "Keycloak", "text": "POST /token (password grant, client saberpro-frontend)"},
+  {"from": "Keycloak", "to": "Frontend Swing", "text": "access_token JWT (roles, aud=saberpro-api) + refresh_token", "reply": true},
+  {"note": "El token va firmado (RS256). AuthSession lo guarda en memoria y lo renueva antes de vencer."},
+  {"from": "Frontend Swing", "to": "API Gateway", "text": "POST /api/reviews/assignments  Bearer JWT"},
+  {"from": "API Gateway", "to": "API Gateway", "text": "valida firma (JWKS), iss, aud, exp; rol ADMINISTRADOR"},
+  {"from": "API Gateway", "to": "review-service", "text": "reenvia la peticion con el mismo Bearer JWT"},
+  {"from": "review-service", "to": "review-service", "text": "valida el JWT otra vez + @PreAuthorize"},
+  {"from": "review-service", "to": "Keycloak", "text": "POST /token (client credentials, saberpro-backend)"},
+  {"from": "Keycloak", "to": "review-service", "text": "token de servicio (rol SERVICIO), en cache", "reply": true},
+  {"from": "review-service", "to": "user-service", "text": "GET /api/users/rev1  Bearer token de servicio"},
+  {"from": "user-service", "to": "Keycloak", "text": "Admin REST API: usuario y roles"},
+  {"from": "user-service", "to": "review-service", "text": "{login: rev1, role: REVISOR}", "reply": true},
+  {"from": "review-service", "to": "review-service", "text": "QuestionReview.assignReviewers(...) reglas de dominio"},
+  {"from": "review-service", "to": "Frontend Swing", "text": "201 Created (o 400/403/409 con mensajes)", "reply": true},
+  {"from": "Frontend Swing", "to": "API Gateway", "text": "peticion sin token o con token alterado", "error": true},
+  {"from": "API Gateway", "to": "Frontend Swing", "text": "401 Unauthorized (nunca llega a los microservicios)", "reply": true, "error": true}
+ ]}

@@ -1,0 +1,14 @@
+digraph G {
+  graph [rankdir=LR, fontname="DejaVu Sans", fontsize=12, pad=0.3, label="Despliegue con Docker Compose: contenedores, puertos y volumenes", labelloc=t];
+  node [fontname="DejaVu Sans", fontsize=9, style="filled", shape=box];
+  host [label="Maquina anfitriona\nlocalhost:8080 gateway\nlocalhost:8180 Keycloak\nlocalhost:15672 RabbitMQ\n+ frontend Swing", fillcolor="#DAE8FC"];
+  subgraph cluster_n { label="red saberpro-backend"; style=dashed; fontname="DejaVu Sans";
+    node [fillcolor="#FFFFFF", style="rounded,filled"];
+    g [label="api-gateway"]; k [label="keycloak"]; kdb [label="keycloak-db (postgres)"]; m [label="rabbitmq"];
+    u [label="user-service"]; q [label="question-service"]; r [label="review-service"]; n [label="notification-service\n(--scale N)"]; }
+  node [shape=cylinder, fillcolor="#FFE6CC", style=filled];
+  v1 [label="keycloak-db-data"]; v2 [label="question-data"]; v3 [label="review-data"]; v4 [label="rabbitmq-data"]; v5 [label="outbox"];
+  realm [label="./keycloak/realm-saberpro.json\n(import automatico)", shape=note, fillcolor="#E1D5E7"];
+  host -> g; host -> k; host -> m;
+  kdb -> v1; q -> v2; r -> v3; m -> v4; n -> v5; realm -> k [style=dashed];
+}

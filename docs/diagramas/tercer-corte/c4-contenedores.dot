@@ -1,0 +1,30 @@
+digraph G {
+  graph [rankdir=TB, fontname="DejaVu Sans", fontsize=12, pad=0.3, nodesep=0.35, ranksep=0.55, label="C4 nivel 2 - Contenedores con seguridad Keycloak/JWT (docker compose)", labelloc=t, newrank=true];
+  node [shape=box, style="rounded,filled", fontname="DejaVu Sans", fontsize=10, color="#1F4E79", fontcolor=white];
+  edge [fontname="DejaVu Sans", fontsize=8, color="#555555"];
+  fe [label="Frontend de escritorio\n[Java Swing]\nFacade + Observer\nAuthSession (tokens en memoria)", fillcolor="#438DD5"];
+  subgraph cluster_docker {
+    label="Docker Compose - red interna saberpro-backend"; style="dashed,rounded"; color="#888888"; fontname="DejaVu Sans"; fontsize=10;
+    kc [label="Keycloak 25\n[:8180 publicado]\nRealm saberpro: roles,\nclientes, usuarios. Emite JWT", fillcolor="#B85450"];
+    kcdb [label="PostgreSQL 16\n[volumen keycloak-db-data]", shape=cylinder, fillcolor="#7F7F7F"];
+    gw [label="API Gateway\n[Spring Cloud Gateway :8080]\nResource server: valida JWT\ny reglas por rol", fillcolor="#1168BD"];
+    us [label="user-service\n[Spring Boot :8081]\nAdaptador del Admin API\nde Keycloak", fillcolor="#1168BD"];
+    qs [label="question-service\n[Spring Boot :8082]\nHU01-03, HU06 (versiones)\nBuilder, Factory, State", fillcolor="#1168BD"];
+    rs [label="review-service\n[Spring Boot :8083]\nDDD + Hexagonal\nHU04, HU05, HU06 (rondas)", fillcolor="#0B5394"];
+    ns [label="notification-service\n[Spring Boot, N replicas]\nCorreos (Adapter)", fillcolor="#1168BD"];
+    mq [label="RabbitMQ\n[exchange topic saberpro.events]\n[volumen rabbitmq-data]", fillcolor="#E07B00"];
+    qdb [label="SQLite\n[volumen question-data]", shape=cylinder, fillcolor="#7F7F7F"];
+    rdb [label="SQLite\n[volumen review-data]", shape=cylinder, fillcolor="#7F7F7F"];
+    ob [label="Bandeja de salida\n[volumen outbox]", shape=folder, fillcolor="#7F7F7F"];
+  }
+  smtp [label="Servidor SMTP\n[externo]", fillcolor="#8C8C8C"];
+  fe -> kc [label="1. usuario + clave\n(password grant) -> JWT"];
+  fe -> gw [label="2. REST + Authorization: Bearer JWT"];
+  gw -> us [label="/api/users/**"]; gw -> qs [label="/api/questions/**"]; gw -> rs [label="/api/reviews/**"];
+  gw -> kc [label="JWKS", style=dashed];
+  us -> kc [label="Admin REST API\n(client credentials)"];
+  rs -> us [label="GET /api/users/{login}\ntoken de servicio"]; ns -> us [label="correos\ntoken de servicio"];
+  qs -> mq [label="question.submitted\nquestion.revised"]; rs -> mq [label="review.assigned\nreview.evaluated\nreview.resubmitted"];
+  mq -> rs [label="question.submitted", style=dashed]; mq -> qs [label="review.evaluated", style=dashed]; mq -> ns [label="review.*", style=dashed];
+  kc -> kcdb; qs -> qdb; rs -> rdb; ns -> ob; ns -> smtp;
+}

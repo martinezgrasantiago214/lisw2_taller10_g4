@@ -1,0 +1,254 @@
+# Banco de Preguntas Saber PRO - tercer corte: todo el backend dockerizado.
+#
+#   docker compose up --build -d        # construye las imagenes y levanta todo
+#   docker compose ps                   # estado y salud de cada contenedor
+#   docker compose logs -f review-service
+#   docker compose down                 # apaga (los datos quedan en los volumenes)
+#   docker compose down -v              # apaga y BORRA los volumenes (datos y realm)
+#
+# No necesita Maven ni JDK en la maquina: el Dockerfile compila dentro de Docker.
+# El frontend Swing se ejecuta fuera de Docker (es una aplicacion de escritorio).
+#
+# Puertos publicados en la maquina:
+#   8080  API Gateway (unica entrada al backend) + Swagger UI unificado
+#   8180  Keycloak (tokens JWT y consola de administracion)
+#   15672 Consola de RabbitMQ
+# Los microservicios NO se publican: solo se alcanzan por la red interna, a traves del gateway.
+#
+# Volumenes (persistencia de las bases de datos):
+#   keycloak-db-data   PostgreSQL de Keycloak (usuarios, roles, clientes, sesiones)
+#   question-data      SQLite del question-service
+#   review-data        SQLite del review-service
+#   rabbitmq-data      colas durables de RabbitMQ
+#   outbox             correos que no se pudieron enviar por SMTP (respaldo en archivos)
+#
+# Escalar el envio de correos (consumidores competidores sobre las mismas colas):
+#   docker compose up -d --scale notification-service=3
+
+name: banco-preguntas-saberpro
+
+# ---- Configuracion compartida (anclas YAML) ----
+
+x-keycloak-env: &keycloak-env
+  # Los tokens los emite Keycloak con el emisor publico http://localhost:8180 (el que usa el
+  # frontend). Los servicios validan ese emisor, pero descargan las llaves y piden sus propios
+  # tokens por la red interna (keycloak:8080).
+  KEYCLOAK_ISSUER_URI: http://localhost:8180/realms/saberpro
+  KEYCLOAK_JWK_SET_URI: http://keycloak:8080/realms/saberpro/protocol/openid-connect/certs
+  KEYCLOAK_TOKEN_URI: http://keycloak:8080/realms/saberpro/protocol/openid-connect/token
+  SERVICE_CLIENT_ID: saberpro-backend
+  SERVICE_CLIENT_SECRET: ${SERVICE_CLIENT_SECRET:-saberpro-backend-secret}
+
+x-rabbit-env: &rabbit-env
+  RABBITMQ_HOST: rabbitmq
+  RABBITMQ_USER: ${RABBITMQ_USER:-guest}
+  RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-guest}
+
+x-java-service: &java-service
+  restart: unless-stopped
+  networks: [backend]
+
+services:
+
+  # ---------------------------------------------------------------- infraestructura
+
+  keycloak-db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD: ${KEYCLOAK_DB_PASSWORD:-keycloak}
+    volumes:
+      - keycloak-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keycloak -d keycloak"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [backend]
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:25.0.6
+    # --import-realm: al primer arranque crea el realm "saberpro" (roles, clientes y usuarios de
+    # prueba) desde keycloak/realm-saberpro.json. Si el realm ya existe en la base, no lo toca.
+    command: ["start-dev", "--import-realm"]
+    restart: unless-stopped
+    environment:
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://keycloak-db:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:-keycloak}
+      KC_HOSTNAME: http://localhost:8180
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      KC_HTTP_ENABLED: "true"
+      KC_HEALTH_ENABLED: "true"
+    volumes:
+      - ./keycloak/realm-saberpro.json:/opt/keycloak/data/import/realm-saberpro.json:ro
+    ports:
+      - "8180:8080"
+    depends_on:
+      keycloak-db:
+        condition: service_healthy
+    healthcheck:
+      # La imagen de Keycloak no trae curl: se consulta /health/ready (puerto de gestion 9000) con bash.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q '\"UP\"' <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    networks: [backend]
+
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    hostname: rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-guest}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-guest}
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    ports:
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [backend]
+
+  # ---------------------------------------------------------------- microservicios
+
+  user-service:
+    <<: *java-service
+    image: saberpro/user-service:3.0.0
+    build:
+      context: .
+      args:
+        SERVICE: user-service
+    environment:
+      <<: *keycloak-env
+      KEYCLOAK_ADMIN_URL: http://keycloak:8080/admin/realms/saberpro
+    depends_on:
+      keycloak:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8081 && printf 'GET /actuator/health HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q '\"UP\"' <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 40s
+
+  question-service:
+    <<: *java-service
+    image: saberpro/question-service:3.0.0
+    build:
+      context: .
+      args:
+        SERVICE: question-service
+    environment:
+      <<: [*keycloak-env, *rabbit-env]
+      SABERPRO_DATA_DIR: /data
+    volumes:
+      - question-data:/data
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8082 && printf 'GET /actuator/health HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q '\"UP\"' <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 40s
+
+  review-service:
+    <<: *java-service
+    image: saberpro/review-service:3.0.0
+    build:
+      context: .
+      args:
+        SERVICE: review-service
+    environment:
+      <<: [*keycloak-env, *rabbit-env]
+      USER_SERVICE_URL: http://user-service:8081
+      SABERPRO_DATA_DIR: /data
+    volumes:
+      - review-data:/data
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+      user-service:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8083 && printf 'GET /actuator/health HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q '\"UP\"' <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 40s
+
+  notification-service:
+    <<: *java-service
+    image: saberpro/notification-service:3.0.0
+    build:
+      context: .
+      args:
+        SERVICE: notification-service
+    environment:
+      <<: [*keycloak-env, *rabbit-env]
+      USER_SERVICE_URL: http://user-service:8081
+      SABERPRO_OUTBOX_DIR: /outbox
+    volumes:
+      - outbox:/outbox
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+      user-service:
+        condition: service_started
+
+  api-gateway:
+    <<: *java-service
+    image: saberpro/api-gateway:3.0.0
+    build:
+      context: .
+      args:
+        SERVICE: api-gateway
+    environment:
+      KEYCLOAK_ISSUER_URI: http://localhost:8180/realms/saberpro
+      KEYCLOAK_JWK_SET_URI: http://keycloak:8080/realms/saberpro/protocol/openid-connect/certs
+      USER_SERVICE_URL: http://user-service:8081
+      QUESTION_SERVICE_URL: http://question-service:8082
+      REVIEW_SERVICE_URL: http://review-service:8083
+    ports:
+      - "8080:8080"
+    depends_on:
+      user-service:
+        condition: service_healthy
+      question-service:
+        condition: service_healthy
+      review-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /actuator/health HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q '\"UP\"' <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 40s
+
+networks:
+  backend:
+    name: saberpro-backend
+
+volumes:
+  keycloak-db-data:
+  question-data:
+  review-data:
+  rabbitmq-data:
+  outbox:

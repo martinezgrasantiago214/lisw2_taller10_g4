@@ -1,0 +1,38 @@
+server:
+  port: ${PORT:8081}
+
+spring:
+  application:
+    name: user-service
+  # Tercer corte: resource server OAuth2. Valida firma (JWKS de Keycloak), emisor y audiencia del token.
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${KEYCLOAK_ISSUER_URI:http://localhost:8180/realms/saberpro}
+          jwk-set-uri: ${KEYCLOAK_JWK_SET_URI:http://localhost:8180/realms/saberpro/protocol/openid-connect/certs}
+          audiences: saberpro-api
+
+saberpro:
+  keycloak:
+    # Admin REST API del realm: Keycloak es la fuente de verdad de usuarios, claves y roles.
+    admin-url: ${KEYCLOAK_ADMIN_URL:http://localhost:8180/admin/realms/saberpro}
+  security:
+    # Auto-registro sin token (solo roles Autor o Revisor; el rol Administrador lo da un admin).
+    public-post-paths: /api/users
+    service-client:
+      token-uri: ${KEYCLOAK_TOKEN_URI:http://localhost:8180/realms/saberpro/protocol/openid-connect/token}
+      id: ${SERVICE_CLIENT_ID:saberpro-backend}
+      secret: ${SERVICE_CLIENT_SECRET:saberpro-backend-secret}
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info

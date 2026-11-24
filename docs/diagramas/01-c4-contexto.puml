@@ -1,0 +1,22 @@
+@startuml c4-contexto
+!include <C4/C4_Context>
+LAYOUT_TOP_DOWN()
+title C4 nivel 1 - Contexto: Banco de Preguntas Saber PRO (segundo corte)
+
+Person(autor, "Autor de preguntas", "Docente que crea preguntas, las lista, las edita y las envia a revision.")
+Person(admin, "Administrador", "Docente que registra usuarios y asigna de 1 a 3 revisores a las preguntas pendientes.")
+Person(revisor, "Revisor", "Docente que evalua las preguntas que le asignan y deja observaciones.")
+
+System(banco, "Banco de Preguntas Saber PRO", "Solucion distribuida de microservicios orientada a eventos para construir y revisar preguntas tipo Saber PRO.")
+System_Ext(correo, "Servidor de correo", "Servicio SMTP (p. ej. Gmail). Si no esta configurado, los correos quedan en una bandeja local.")
+
+Rel(autor, banco, "Crea, lista, edita y envia a revision sus preguntas; lee observaciones")
+Rel(admin, banco, "Asigna revisores; registra usuarios")
+Rel(revisor, banco, "Lista sus preguntas asignadas, las evalua y deja observaciones")
+Rel(banco, correo, "Envia notificaciones", "SMTP")
+Rel(correo, revisor, "Correo: pregunta asignada")
+Rel(correo, autor, "Correo: pregunta evaluada")
+Rel(correo, admin, "Correo: pregunta evaluada")
+
+SHOW_LEGEND()
+@enduml

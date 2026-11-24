@@ -1,303 +1,129 @@
-# Saber PRO Question Bank — Persistence with JPA and a Layered Architecture
+# Banco de Preguntas Saber PRO
 
-Workshop 10 · Software Engineering Lab II · Universidad del Cauca (2026.2)
-Team: _Member 1_ · _Member 2_ — Group _X_
+Sistema para que docentes construyan preguntas tipo Saber PRO (selección múltiple con única respuesta, Diseño Centrado en Evidencia), las sometan a **revisión por pares** y las corrijan por **versiones** hasta que sean aprobadas.
 
-## Purpose
+Proyecto de **Ingeniería de Software II** (Universidad del Cauca, 2026.2), construido en tres iteraciones: monolito en capas → microservicios orientados a eventos → **microservicios seguros con Keycloak/JWT, arquitectura limpia (DDD + hexagonal) y despliegue con Docker Compose**.
 
-The Saber PRO Question Bank lets authors write questions, reviewers evaluate them, and teachers build quizzes (mock exams) from published questions. This project implements its persistence layer with Spring Data JPA and H2 while keeping the **domain model free of any JPA annotation**: business classes are plain Java, JPA annotations live only in separate *record* classes, and services depend on technology-independent repository contracts.
+![Java 17](https://img.shields.io/badge/Java-17-blue) ![Spring Boot 3.3](https://img.shields.io/badge/Spring%20Boot-3.3-brightgreen) ![Keycloak 25](https://img.shields.io/badge/Keycloak-25-red) ![RabbitMQ](https://img.shields.io/badge/RabbitMQ-3.13-orange) ![Docker Compose](https://img.shields.io/badge/Docker-Compose-2496ED) ![Tests](https://img.shields.io/badge/pruebas-247-success)
 
-## Technology
+---
 
-Java 17 · Spring Boot 3.4.5 · Spring Web · Spring Data JPA / Hibernate · H2 · JUnit 5 · Maven
+## Qué hace
 
-## Architecture
+| HU | Rol | Funcionalidad |
+|----|-----|---------------|
+| HU01 | Autor | Crear preguntas con validación estructural completa (400 con todos los errores juntos) |
+| HU02 | Autor | Enviar a revisión (Borrador → Pendiente), estados con colores |
+| HU03 | Autor | Listar, buscar, filtrar, paginar y editar sus borradores |
+| HU04 | Administrador | Asignar de 1 a 3 revisores; correo a cada revisor |
+| HU05 | Revisor | Ver sus asignaciones, aprobar o rechazar con observaciones; notificación al autor y administradores |
+| **HU06** | Autor | **Historial de revisiones** (una ronda por versión, con observaciones), **versión mejorada** de una pregunta rechazada y nueva ronda de revisión; notificación a los implicados |
 
-Layered architecture with dependency inversion at the repository boundary (not hexagonal).
+## Arquitectura
 
-```text
-co.edu.unicauca.questionbank
-├── api/                        REST controllers and error handling
-│   ├── QuestionController, QuizController, CatalogController, ApiExceptionHandler
-├── application/                Use cases; depend only on domain repository interfaces
-│   ├── QuestionService, ReviewService, QuizService, CatalogService
-├── domain/
-│   ├── model/                  Plain Java business classes (no JPA, no Spring)
-│   └── repository/             Technology-independent contracts
-└── infrastructure/jpa/
-    ├── record/                 JPA entities (@Entity, @Table, @Id, relationships, inheritance)
-    ├── repository/             Spring Data interfaces (JpaRepository)
-    ├── mapper/                 DomainMapper: domain <-> record translation
-    └── *RepositoryJpa          Concrete implementations of the domain contracts
+![Contenedores](docs/diagramas/tercer-corte/c4-contenedores.png)
+
+```
+ Frontend Swing ──(1) usuario/clave──> Keycloak :8180 ──> JWT firmado (roles, aud=saberpro-api)
+       │
+       └──(2) REST + Bearer JWT──> API Gateway :8080 (valida JWT + roles)
+                                       ├──> user-service        (adaptador del Admin API de Keycloak)
+                                       ├──> question-service    (HU01-03, versiones HU06)        ── SQLite [volumen]
+                                       └──> review-service      (HU04-06, DDD + hexagonal)       ── SQLite [volumen]
+ question-service ─┐                                    ┌──> review-service        question.submitted
+ review-service   ─┴──> RabbitMQ (saberpro.events) ─────┼──> question-service      review.evaluated
+                                                        └──> notification-service  review.assigned / evaluated / resubmitted
 ```
 
-```mermaid
-flowchart LR
-    API[api<br/>controllers] --> APP[application<br/>services]
-    APP --> CONTRACT[[domain.repository<br/>interfaces]]
-    APP --> MODEL[domain.model]
-    IMPL[infrastructure.jpa<br/>*RepositoryJpa] -. implements .-> CONTRACT
-    IMPL --> MAP[mapper<br/>DomainMapper]
-    IMPL --> SD[repository<br/>Spring Data]
-    MAP --> MODEL
-    MAP --> REC[record<br/>JPA entities]
-    SD --> REC --> DB[(H2)]
-```
+- **Microservicios** con base de datos propia, comunicados por **REST** (consultas) y **eventos en RabbitMQ** (cambios).
+- **Seguridad:** Keycloak emite los tokens; el gateway y cada servicio validan firma, emisor, audiencia y vigencia (*defensa en profundidad*); autorización por rol con `@PreAuthorize` y por reglas de dominio. Los servicios se llaman entre sí con un **token de servicio** (*client credentials*). El usuario de cada operación sale **del token**, nunca del cuerpo JSON.
+- **Arquitectura limpia en el review-service:** agregado `QuestionReview` (rondas, asignaciones, evaluaciones) cuyo estado solo cambia con métodos de negocio; puertos de entrada/salida y adaptadores (REST, RabbitMQ, SQLite, HTTP). La regla de dependencias se verifica con **ArchUnit** en cada build.
 
-Dependency rules: `api` delegates to `application`; `application` uses repository contracts only (never `JpaRepository`); `domain` contains the model and the contracts; `infrastructure` implements the contracts with Spring Data JPA; the mapper translates between both models.
+| Módulo | Contenido |
+|--------|-----------|
+| `common` | Contratos compartidos (eventos, enums, `ApiError`), bus de eventos (Observer) y **seguridad compartida** (resource server JWT, convertidor de roles de Keycloak, token de servicio). |
+| `user-service` | Consulta y registro de usuarios sobre el **Admin REST API de Keycloak** (sin contraseñas propias). |
+| `question-service` | Preguntas: Builder, Factory Method, Tuberías y Filtros, **State**; versiones archivadas (HU06). |
+| `review-service` | Revisión por pares con **DDD + hexagonal**: `domain`, `application/port/{in,out}`, `application/service`, `infrastructure/adapter/{in,out}`. |
+| `notification-service` | Correos (Adapter SMTP / bandeja en archivo); escala con réplicas. |
+| `api-gateway` | Spring Cloud Gateway: única entrada, validación JWT, Swagger UI unificado. |
+| `frontend` | Cliente Swing: login con Keycloak, `Bearer` en cada petición, renovación del token, pantallas por rol. |
+| `keycloak/` | Realm `saberpro` (roles, clientes, usuarios de prueba) que se importa solo. |
 
-## Domain model
+## Ejecutar
 
-```mermaid
-classDiagram
-    class Question {
-        <<abstract>>
-        -Long id
-        -String statement
-        -DifficultyLevel difficulty
-        -QuestionStatus status
-        -Long authorId
-        -Long topicId
-        -Set~Long~ competencyIds
-        +getType() String*
-        +isReadyForReview() boolean*
-        +submitForReview()
-        +startReview()
-        +approve()
-        +reject()
-        +returnToDraft()
-        +publish()
-        +archive()
-        +classify(Long, Collection)
-        +isUsableInQuizzes() boolean
-    }
-    class MultipleChoiceQuestion {
-        -List~AnswerOption~ options
-        +addOption(AnswerOption)
-        +findCorrectOption() Optional
-    }
-    class TrueFalseQuestion {
-        -boolean expectedValue
-    }
-    class OpenQuestion {
-        -String expectedAnswer
-        -int maxWords
-    }
-    class AnswerOption {
-        -String label
-        -String text
-        -boolean correct
-    }
-    class QuestionMetadata {
-        -LocalDateTime lastReviewDate
-        -String cognitiveLevel
-        -Integer estimatedTimeMinutes
-        -String editorialObservations
-    }
-    class User {
-        -Long id
-        -String fullName
-        -String email
-        -Role role
-        +canAuthorQuestions() boolean
-    }
-    class Topic {
-        -Long id
-        -String name
-        -String module
-    }
-    class Competency {
-        -Long id
-        -String code
-        -String name
-    }
-    class Quiz {
-        -Long id
-        -String title
-        -List~Long~ questionIds
-    }
-    Question <|-- MultipleChoiceQuestion
-    Question <|-- TrueFalseQuestion
-    Question <|-- OpenQuestion
-    MultipleChoiceQuestion "1" *-- "5" AnswerOption
-    Question "1" *-- "0..1" QuestionMetadata
-    Question "*" --> "1" User : author
-    Question "*" --> "1" Topic
-    Question "*" --> "*" Competency
-    Quiz "*" --> "1..*" Question : ordered
-```
-
-Question lifecycle (only `PUBLISHED` questions can be used in quizzes):
-
-```mermaid
-stateDiagram-v2
-    [*] --> DRAFT
-    DRAFT --> PENDING_REVIEW : submitForReview()
-    PENDING_REVIEW --> IN_REVIEW : startReview()
-    IN_REVIEW --> APPROVED : approve()
-    IN_REVIEW --> REJECTED : reject()
-    REJECTED --> DRAFT : returnToDraft()
-    APPROVED --> PUBLISHED : publish()
-    PUBLISHED --> ARCHIVED : archive()
-```
-
-## Relational model
-
-```mermaid
-erDiagram
-    USERS ||--o{ QUESTIONS : writes
-    TOPICS ||--o{ QUESTIONS : classifies
-    QUESTIONS ||--o| MULTIPLE_CHOICE_QUESTIONS : "JOINED subtype"
-    QUESTIONS ||--o| TRUE_FALSE_QUESTIONS : "JOINED subtype"
-    QUESTIONS ||--o| OPEN_QUESTIONS : "JOINED subtype"
-    MULTIPLE_CHOICE_QUESTIONS ||--o{ ANSWER_OPTIONS : has
-    QUESTIONS ||--o| QUESTION_METADATA : has
-    QUESTIONS ||--o{ QUESTION_COMPETENCIES : assesses
-    COMPETENCIES ||--o{ QUESTION_COMPETENCIES : "assessed by"
-    QUIZZES ||--o{ QUIZ_QUESTIONS : contains
-    QUESTIONS ||--o{ QUIZ_QUESTIONS : "used in"
-
-    USERS {
-        BIGINT id PK
-        VARCHAR full_name
-        VARCHAR email UK
-        VARCHAR role
-    }
-    TOPICS {
-        BIGINT id PK
-        VARCHAR name UK
-        VARCHAR saber_pro_module
-    }
-    COMPETENCIES {
-        BIGINT id PK
-        VARCHAR code UK
-        VARCHAR name
-    }
-    QUESTIONS {
-        BIGINT id PK
-        VARCHAR statement
-        VARCHAR difficulty
-        VARCHAR status
-        BIGINT author_id FK
-        BIGINT topic_id FK
-    }
-    MULTIPLE_CHOICE_QUESTIONS {
-        BIGINT question_id PK, FK
-    }
-    TRUE_FALSE_QUESTIONS {
-        BIGINT question_id PK, FK
-        BOOLEAN expected_value
-    }
-    OPEN_QUESTIONS {
-        BIGINT question_id PK, FK
-        VARCHAR expected_answer
-        INT max_words
-    }
-    ANSWER_OPTIONS {
-        BIGINT id PK
-        VARCHAR label
-        VARCHAR option_text
-        BOOLEAN is_correct
-        BIGINT question_id FK
-    }
-    QUESTION_METADATA {
-        BIGINT id PK
-        BIGINT question_id FK, UK
-        TIMESTAMP last_review_date
-        VARCHAR cognitive_level
-        INT estimated_time_minutes
-        VARCHAR editorial_observations
-    }
-    QUESTION_COMPETENCIES {
-        BIGINT question_id PK, FK
-        BIGINT competency_id PK, FK
-    }
-    QUIZZES {
-        BIGINT id PK
-        VARCHAR title
-        VARCHAR description
-    }
-    QUIZ_QUESTIONS {
-        BIGINT id PK
-        BIGINT quiz_id FK
-        BIGINT question_id FK
-        INT question_order
-    }
-```
-
-| Relationship | Mapping |
-|---|---|
-| `@OneToOne` | `QuestionMetadataRecord.question` owns a NOT NULL, UNIQUE `question_id`; `QuestionRecord.metadata` is the inverse side with cascade and orphan removal |
-| `@OneToMany` | `MultipleChoiceQuestionRecord.options` (`mappedBy = "question"`, cascade ALL, orphan removal, ordered by label) |
-| `@ManyToOne` | `QuestionRecord.author` and `QuestionRecord.topic`; `AnswerOptionRecord.question` |
-| `@ManyToMany` | `QuestionRecord.competencies` through join table `question_competencies` |
-| Association entity | `QuizQuestionRecord` (quiz, question, position) with unique keys |
-| Inheritance | `QuestionRecord` with `InheritanceType.JOINED`; subtypes use `@PrimaryKeyJoinColumn(name = "question_id")` |
-
-## Running
-
-Requirements: JDK 17+ and Maven 3.8+.
+Requisito: **Docker** (Docker Desktop o Docker Engine con Compose v2). No hace falta Maven ni JDK para el backend.
 
 ```bash
-mvn clean test           # unit and integration tests
-mvn spring-boot:run      # API on http://localhost:8080
-mvn javadoc:javadoc      # API documentation in target/site/apidocs
+git clone https://github.com/martinezgrasantiago214/BANCO_PREGUNTAS_SABER_PRO.git
+cd BANCO_PREGUNTAS_SABER_PRO
+docker compose up --build -d      # la primera vez tarda unos minutos (descarga y compila)
+docker compose ps                 # esperar a que todo quede "healthy"
 ```
 
-H2 console: `http://localhost:8080/h2-console` — JDBC URL `jdbc:h2:mem:questionbank`, user `sa`, empty password. Sample data (users, topics, competencies, three questions and one quiz) is loaded on start-up.
+| Recurso | URL | Credenciales |
+|---------|-----|--------------|
+| API Gateway + Swagger UI (botón *Authorize*) | http://localhost:8080/swagger-ui.html | token JWT |
+| Consola de Keycloak | http://localhost:8180/admin | `admin` / `admin` |
+| Consola de RabbitMQ | http://localhost:15672 | `guest` / `guest` |
 
-## Usage examples
+**Usuarios de prueba** (realm `saberpro`): `admin/Admin123!` (administrador), `autor1/Autor123!` y `autor2/Autor123!` (autores), `rev1`, `rev2`, `rev3` con `Revisor123!` (revisores).
+
+**Frontend de escritorio** (requiere JDK 17 y Maven):
 
 ```bash
-# Register an author
-curl -X POST localhost:8080/api/users -H "Content-Type: application/json" \
-  -d '{"fullName":"Luis Gómez","email":"luis@unicauca.edu.co","role":"AUTHOR"}'
-
-# Create a multiple-choice question (five options, one correct)
-curl -X POST localhost:8080/api/questions/multiple-choice -H "Content-Type: application/json" \
-  -d '{"statement":"¿Cuánto es el 20 % de 150?","difficulty":"LOW","authorId":1,"topicId":1,"competencyIds":[1],
-       "options":[{"label":"A","text":"30","correct":true},{"label":"B","text":"20","correct":false},
-                  {"label":"C","text":"15","correct":false},{"label":"D","text":"300","correct":false},
-                  {"label":"E","text":"3","correct":false}]}'
-
-# Classify, submit and move through the lifecycle
-curl -X PUT  localhost:8080/api/questions/4/classification -H "Content-Type: application/json" -d '{"topicId":1,"competencyIds":[1,2]}'
-curl -X POST localhost:8080/api/questions/4/submit
-curl -X POST localhost:8080/api/questions/4/start-review
-curl -X POST localhost:8080/api/questions/4/approve
-curl -X POST localhost:8080/api/questions/4/publish
-
-# Queries
-curl "localhost:8080/api/questions?authorId=1"
-curl "localhost:8080/api/questions?status=PUBLISHED"
-curl "localhost:8080/api/questions/published?competencyId=1"
-
-# Build a quiz (409 Conflict if a question is not published)
-curl -X POST localhost:8080/api/quizzes -H "Content-Type: application/json" -d '{"title":"Simulacro 2","questionIds":[1,4]}'
+mvn -pl frontend -am package -DskipTests
+java -jar frontend/target/frontend-3.0.0.jar
+# otras URLs: -Dsaberpro.gateway.url=http://host:8080 -Dsaberpro.keycloak.url=http://host:8180
 ```
 
-| Method | Path | Description |
-|---|---|---|
-| POST/GET | `/api/users`, `/api/topics`, `/api/competencies` | Reference data |
-| POST | `/api/questions/multiple-choice`, `/true-false`, `/open` | Create a question |
-| GET | `/api/questions?authorId=&status=&topicId=` | List (polymorphic), optionally filtered |
-| GET | `/api/questions/published?competencyId=` | Published questions by competency |
-| GET | `/api/questions/{id}` | Get one question |
-| PUT | `/api/questions/{id}/classification` | Assign topic and competencies |
-| PUT | `/api/questions/{id}/metadata` | Add or replace metadata |
-| POST | `/api/questions/{id}/submit`, `/start-review`, `/approve`, `/reject`, `/return-to-draft`, `/publish`, `/archive` | Lifecycle |
-| DELETE | `/api/questions/{id}` | Delete (409 if used in a quiz) |
-| POST/GET | `/api/quizzes`, `/api/quizzes/{id}` | Quizzes |
+**Postman:** importar `postman/BancoPreguntas-API.postman_collection.json` y ejecutarla en orden (56 peticiones con aserciones): tokens por rol, gestión de usuarios y roles en Keycloak, pruebas de seguridad (401/403) y el flujo completo HU01 → HU06.
 
-Errors use RFC 7807 `ProblemDetail`: 400 invalid input, 404 missing resource, 409 business-rule or constraint violation.
+**Desarrollo desde el IDE:** `docker compose up -d keycloak rabbitmq` y luego el compound *"Banco de Preguntas (todo el sistema)"* de `.vscode/launch.json`.
 
-## Tests
+Otros comandos útiles:
 
-| Class | Kind | Verifies |
-|---|---|---|
-| `domain.QuestionTest` | Unit, no Spring | Five-option rule, lifecycle transitions, editing guard, classification, quiz order, roles |
-| `domain.DomainPurityTest` | Architecture | No domain file imports JPA or Spring |
-| `application.QuestionServiceTest`, `QuizServiceTest` | Unit with in-memory repositories | Use cases work against the contracts without JPA; author/role/topic/competency validation; only published questions in quizzes |
-| `infrastructure.jpa.QuestionRepositoryJpaIntegrationTest` | `@DataJpaTest` on H2 | Save/retrieve each type, JOINED tables, one-to-many and orphan removal, many-to-one FKs, many-to-many join table, optional one-to-one, queries, cascading delete, FK and UNIQUE constraints rejecting invalid rows |
-| `infrastructure.jpa.QuizRepositoryJpaIntegrationTest` | `@DataJpaTest` on H2 | Question order, unique keys, FK preventing deletion of a question used in a quiz |
-| `api.QuestionApiIntegrationTest` | `@SpringBootTest` + MockMvc | Full HTTP flow and 400/404/409 responses |
+```bash
+docker compose up -d --scale notification-service=3   # escalar los consumidores de correo
+docker compose logs -f review-service
+docker compose down        # apaga; los datos quedan en los volúmenes
+docker compose down -v     # apaga y borra los volúmenes (vuelve a importar el realm)
+```
+
+Para cambiar secretos y contraseñas, copiar `.env.example` como `.env`.
+
+## Pruebas
+
+```bash
+mvn test     # 247 pruebas JUnit 5; no necesitan Keycloak, RabbitMQ ni SMTP
+```
+
+Cubren las entidades y servicios de dominio de cada microservicio (agregado `QuestionReview`, objetos de valor, `Question` con versiones y estados, fábricas, filtros, usuarios), los casos de uso con dobles de los puertos, los repositorios SQLite, los códigos HTTP de los controladores (usuario simulado del token), el cliente de Keycloak del frontend y la regla de dependencias hexagonal (ArchUnit).
+
+## Patrones de diseño
+
+| Tipo | Patrones |
+|------|----------|
+| GoF creacionales | Builder (`Question`), Factory Method (`QuestionFactory`) |
+| GoF estructurales | Adapter (canales de notificación, adaptadores hexagonales), Facade (`BancoPreguntasFacade`) |
+| GoF de comportamiento | State (ciclo de vida, incluida la versión mejorada), Observer (`DomainEventBus`, pantallas) |
+| DDD táctico | Agregado, Entidad, Objeto de valor, Evento de dominio, Repositorio |
+| Arquitectura | Microservicios, API Gateway, Event-Driven, Hexagonal, Base de datos por servicio, Consumidores competidores, Bloqueo optimista, OAuth2 (password, client credentials) |
+
+## Documentación
+
+- Documento de arquitectura del tercer corte: [`docs/ARQUITECTURA.md`](docs/ARQUITECTURA.md) — también en [PDF](docs/Documento-Arquitectura-Tercer-Corte.pdf) y [Word](docs/Documento-Arquitectura-Tercer-Corte.docx).
+- Diagramas C4, de clases, de despliegue y de secuencia: [`docs/diagramas/tercer-corte/`](docs/diagramas/tercer-corte).
+- Cortes anteriores: [`docs/primer-corte/`](docs/primer-corte), [`docs/segundo-corte/`](docs/segundo-corte).
+
+## Tecnologías
+
+Java 17 · Spring Boot 3.3 · Spring Cloud Gateway · Spring Security (OAuth2 Resource Server) · Keycloak 25 · PostgreSQL 16 · RabbitMQ 3.13 · SQLite · Java Swing · JUnit 5 · ArchUnit · Docker / Docker Compose · OpenAPI (springdoc) · Postman · Jira
+
+## Equipo
+
+| Integrante | GitHub |
+|------------|--------|
+| Oscar Alejandro Menza Chavisnan | [@drax2311](https://github.com/drax2311) |
+| Santiago Martínez Grajales | [@martinezgrasantiago214](https://github.com/martinezgrasantiago214) |
+| Andrés Felipe Florín Burbano | [@andresflorin](https://github.com/andresflorin) |

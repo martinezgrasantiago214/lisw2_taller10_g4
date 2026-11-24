@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1170" height="704" font-family="DejaVu Sans" font-size="11">
+<rect width="1170" height="704" fill="white"/>
+<text x="585.0" y="24" text-anchor="middle" font-size="14" font-weight="bold">Secuencia: autenticacion con Keycloak y autorizacion con JWT (defensa en profundidad)</text>
+<defs><marker id="a" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8 z" fill="#333"/></marker><marker id="o" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8" fill="none" stroke="#333"/></marker></defs>
+<rect x="30" y="42" width="160" height="30" rx="6" fill="#1168BD" stroke="#0B4884"/>
+<text x="110" y="58" text-anchor="middle" fill="white">Frontend Swing</text>
+<line x1="110" y1="76" x2="110" y2="684" stroke="#999" stroke-dasharray="4,4"/>
+<rect x="220" y="42" width="160" height="30" rx="6" fill="#1168BD" stroke="#0B4884"/>
+<text x="300" y="58" text-anchor="middle" fill="white">Keycloak</text>
+<line x1="300" y1="76" x2="300" y2="684" stroke="#999" stroke-dasharray="4,4"/>
+<rect x="410" y="42" width="160" height="30" rx="6" fill="#1168BD" stroke="#0B4884"/>
+<text x="490" y="58" text-anchor="middle" fill="white">API Gateway</text>
+<line x1="490" y1="76" x2="490" y2="684" stroke="#999" stroke-dasharray="4,4"/>
+<rect x="600" y="42" width="160" height="30" rx="6" fill="#1168BD" stroke="#0B4884"/>
+<text x="680" y="58" text-anchor="middle" fill="white">review-service</text>
+<line x1="680" y1="76" x2="680" y2="684" stroke="#999" stroke-dasharray="4,4"/>
+<rect x="790" y="42" width="160" height="30" rx="6" fill="#1168BD" stroke="#0B4884"/>
+<text x="870" y="58" text-anchor="middle" fill="white">user-service</text>
+<line x1="870" y1="76" x2="870" y2="684" stroke="#999" stroke-dasharray="4,4"/>
+<line x1="110" y1="120" x2="300" y2="120" stroke="#333" marker-end="url(#a)"/>
+<text x="205.0" y="115" text-anchor="middle" fill="#333">POST /token (password grant, client saberpro-frontend)</text>
+<line x1="300" y1="154" x2="110" y2="154" stroke="#333" stroke-dasharray="6,4" marker-end="url(#a)"/>
+<text x="205.0" y="149" text-anchor="middle" fill="#333">access_token JWT (roles, aud=saberpro-api) + refresh_token</text>
+<rect x="50" y="174" width="1050" height="20" fill="#FFF2CC" stroke="#D6B656"/>
+<text x="58" y="188" font-style="italic">El token va firmado (RS256). AuthSession lo guarda en memoria y lo renueva antes de vencer.</text>
+<line x1="110" y1="222" x2="490" y2="222" stroke="#333" marker-end="url(#a)"/>
+<text x="300.0" y="217" text-anchor="middle" fill="#333">POST /api/reviews/assignments  Bearer JWT</text>
+<path d="M490,250 h40 v14 h-38" fill="none" stroke="#333" marker-end="url(#a)"/>
+<text x="536" y="258" fill="#333">valida firma (JWKS), iss, aud, exp; rol ADMINISTRADOR</text>
+<line x1="490" y1="290" x2="680" y2="290" stroke="#333" marker-end="url(#a)"/>
+<text x="585.0" y="285" text-anchor="middle" fill="#333">reenvia la peticion con el mismo Bearer JWT</text>
+<path d="M680,318 h40 v14 h-38" fill="none" stroke="#333" marker-end="url(#a)"/>
+<text x="726" y="326" fill="#333">valida el JWT otra vez + @PreAuthorize</text>
+<line x1="680" y1="358" x2="300" y2="358" stroke="#333" marker-end="url(#a)"/>
+<text x="490.0" y="353" text-anchor="middle" fill="#333">POST /token (client credentials, saberpro-backend)</text>
+<line x1="300" y1="392" x2="680" y2="392" stroke="#333" stroke-dasharray="6,4" marker-end="url(#a)"/>
+<text x="490.0" y="387" text-anchor="middle" fill="#333">token de servicio (rol SERVICIO), en cache</text>
+<line x1="680" y1="426" x2="870" y2="426" stroke="#333" marker-end="url(#a)"/>
+<text x="775.0" y="421" text-anchor="middle" fill="#333">GET /api/users/rev1  Bearer token de servicio</text>
+<line x1="870" y1="460" x2="300" y2="460" stroke="#333" marker-end="url(#a)"/>
+<text x="585.0" y="455" text-anchor="middle" fill="#333">Admin REST API: usuario y roles</text>
+<line x1="870" y1="494" x2="680" y2="494" stroke="#333" stroke-dasharray="6,4" marker-end="url(#a)"/>
+<text x="775.0" y="489" text-anchor="middle" fill="#333">{login: rev1, role: REVISOR}</text>
+<path d="M680,522 h40 v14 h-38" fill="none" stroke="#333" marker-end="url(#a)"/>
+<text x="726" y="530" fill="#333">QuestionReview.assignReviewers(...) reglas de dominio</text>
+<line x1="680" y1="562" x2="110" y2="562" stroke="#333" stroke-dasharray="6,4" marker-end="url(#a)"/>
+<text x="395.0" y="557" text-anchor="middle" fill="#333">201 Created (o 400/403/409 con mensajes)</text>
+<line x1="110" y1="596" x2="490" y2="596" stroke="#C0392B" marker-end="url(#a)"/>
+<text x="300.0" y="591" text-anchor="middle" fill="#C0392B">peticion sin token o con token alterado</text>
+<line x1="490" y1="630" x2="110" y2="630" stroke="#C0392B" stroke-dasharray="6,4" marker-end="url(#a)"/>
+<text x="300.0" y="625" text-anchor="middle" fill="#C0392B">401 Unauthorized (nunca llega a los microservicios)</text>
+</svg>

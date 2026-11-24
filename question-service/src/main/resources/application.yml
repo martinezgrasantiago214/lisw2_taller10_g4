@@ -1,0 +1,35 @@
+server:
+  port: ${PORT:8082}
+
+spring:
+  application:
+    name: question-service
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USER:guest}
+    password: ${RABBITMQ_PASSWORD:guest}
+  # Tercer corte: resource server OAuth2. Valida firma (JWKS de Keycloak), emisor y audiencia del token.
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${KEYCLOAK_ISSUER_URI:http://localhost:8180/realms/saberpro}
+          jwk-set-uri: ${KEYCLOAK_JWK_SET_URI:http://localhost:8180/realms/saberpro/protocol/openid-connect/certs}
+          audiences: saberpro-api
+
+saberpro:
+  # Base de datos propia del servicio (SQLite). En Docker vive en el volumen question-data.
+  data-dir: ${SABERPRO_DATA_DIR:${user.home}/BancoPreguntasSaberPro}
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info

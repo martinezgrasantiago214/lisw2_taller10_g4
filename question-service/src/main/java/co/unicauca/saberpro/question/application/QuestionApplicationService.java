@@ -1,0 +1,287 @@
+package co.unicauca.saberpro.question.application;
+
+import co.unicauca.saberpro.common.contract.EvaluationVerdict;
+import co.unicauca.saberpro.common.contract.QuestionStatus;
+import co.unicauca.saberpro.common.events.QuestionCreatedEvent;
+import co.unicauca.saberpro.common.events.QuestionEvaluatedEvent;
+import co.unicauca.saberpro.common.events.QuestionRevisedEvent;
+import co.unicauca.saberpro.common.events.QuestionSubmittedForReviewEvent;
+import co.unicauca.saberpro.common.web.BusinessException;
+import co.unicauca.saberpro.common.web.ConflictException;
+import co.unicauca.saberpro.common.web.ForbiddenOperationException;
+import co.unicauca.saberpro.common.web.ResourceNotFoundException;
+import co.unicauca.saberpro.question.access.IQuestionRepository;
+import co.unicauca.saberpro.question.access.PagedResult;
+import co.unicauca.saberpro.question.access.QuestionFilterCriteria;
+import co.unicauca.saberpro.question.domain.Question;
+import co.unicauca.saberpro.question.domain.QuestionRequest;
+import co.unicauca.saberpro.question.domain.QuestionVersion;
+import co.unicauca.saberpro.question.domain.factory.QuestionFactory;
+import co.unicauca.saberpro.question.domain.factory.QuestionFactoryRegistry;
+import co.unicauca.saberpro.common.events.DomainEventBus;
+
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.util.List;
+
+/**
+ * Casos de uso del question-service. Coordina el dominio (fabricas, Builder,
+ * estados), la persistencia y la publicacion de eventos; no contiene reglas
+ * de negocio propias.
+ */
+public class QuestionApplicationService {
+
+    private final IQuestionRepository repository;
+    private final QuestionFactoryRegistry factories;
+    private final DomainEventBus eventBus;
+
+    public QuestionApplicationService(IQuestionRepository repository, QuestionFactoryRegistry factories,
+                                      DomainEventBus eventBus) {
+        this.repository = repository;
+        this.factories = factories;
+        this.eventBus = eventBus;
+    }
+
+    /**
+     * HU01: crea una pregunta en estado Borrador (PSP-16, PSP-17, PSP-18).
+     *
+     * <ol>
+     *   <li>Normaliza lo que envio el autor (espacios, respuesta correcta
+     *       escrita igual que su distractor).</li>
+     *   <li>Elige la fabrica del tipo (Factory Method). Si no se indica tipo,
+     *       el API asume seleccion multiple.</li>
+     *   <li>La fabrica aplica la validacion estructural completa (PSP-17): 4
+     *       distractores no vacios ni repetidos, respuesta correcta entre
+     *       ellos, contenido, clasificacion y metadatos. Si algo falla, lanza
+     *       QuestionValidationException con todos los errores (400) y no se
+     *       guarda nada.</li>
+     *   <li>Construye la pregunta con el Builder; nace en Borrador.</li>
+     *   <li>La guarda (PSP-18) y publica QuestionCreatedEvent (question.created)
+     *       en el bus de eventos, que la reenvia a RabbitMQ.</li>
+     * </ol>
+     */
+    public Question create(QuestionRequest request) {
+        if (request == null) {
+            throw new BusinessException("Debe enviar los datos de la pregunta.");
+        }
+        QuestionRequest data = request.normalized();
+        QuestionFactory factory = factories.forType(data.getType())
+                .orElseThrow(() -> new BusinessException("Tipo de pregunta no soportado: " + data.getType()
+                        + ". Tipos disponibles: " + factories.all().stream().map(QuestionFactory::getType).toList()));
+
+        Question question = factory.create(data);
+        if (!repository.save(question)) {
+            throw new IllegalStateException("No fue posible guardar la pregunta en la base de datos.");
+        }
+        eventBus.publish(new QuestionCreatedEvent(question.getId(), question.getAuthorLogin(),
+                question.getDirectQuestion(), question.getTopic(), Instant.now()));
+        return question;
+    }
+
+    /** Consulta una pregunta por su id (la usan el autor para editar y el revisor para leerla). */
+    public Question findById(String id) {
+        return repository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("No existe la pregunta " + id));
+    }
+
+    /** Tamano maximo de pagina: ningun listado trae todas las preguntas de una vez. */
+    public static final int MAX_PAGE_SIZE = 50;
+
+    /**
+     * HU03: listado de las preguntas del autor con busqueda, filtros y
+     * paginacion (PSP-24 listado, PSP-25 busqueda por palabra clave en el
+     * enunciado, el contexto o el tema, PSP-26
+     * filtros por estado y tema, PSP-27 paginacion).
+     *
+     * Normaliza los criterios (textos sin espacios sobrantes, tamano de
+     * pagina entre 1 y {@link #MAX_PAGE_SIZE}) y, si la pagina pedida ya no
+     * existe (por ejemplo, despues de aplicar un filtro), devuelve la ultima.
+     */
+    public PagedResult<Question> search(QuestionFilterCriteria criteria) {
+        QuestionFilterCriteria normalized = new QuestionFilterCriteria()
+                .setAuthorLogin(blankToNull(criteria.getAuthorLogin()))
+                .setStatus(criteria.getStatus())
+                .setTopic(blankToNull(criteria.getTopic()))
+                .setKeyword(blankToNull(criteria.getKeyword()))
+                .setPage(criteria.getPage())
+                .setPageSize(Math.min(criteria.getPageSize(), MAX_PAGE_SIZE));
+
+        PagedResult<Question> result = repository.search(normalized);
+        if (result.items().isEmpty() && result.totalItems() > 0 && normalized.getPage() > result.totalPages()) {
+            return repository.search(normalized.setPage(result.totalPages()));
+        }
+        return result;
+    }
+
+    /**
+     * HU03: edita una pregunta propia (PSP-28).
+     *
+     * Solo el autor puede editarla (si no, 403) y solo mientras su estado lo
+     * permita (Borrador, lo decide el patron State con isEditable(); si no, 409). Los datos
+     * nuevos pasan por la misma validacion estructural de la fabrica del
+     * tipo. La pregunta conserva su id, tipo, autor, fecha de creacion y
+     * estado.
+     */
+    public Question update(String id, QuestionRequest request) {
+        Question current = findById(id);
+        if (!current.isAuthoredBy(request.getAuthorLogin())) {
+            throw new ForbiddenOperationException("Solo el autor de la pregunta puede editarla.");
+        }
+        if (!current.isEditable()) {
+            throw new ConflictException("Solo se pueden editar preguntas en estado Borrador. Esta pregunta esta en "
+                    + current.getStatus().getLabel() + ".");
+        }
+
+        QuestionRequest clean = request.normalized();
+        QuestionRequest data = new QuestionRequest(current.getType(), clean.getContext(),
+                clean.getDirectQuestion(), clean.getDistractors(), clean.getCorrectAnswer(),
+                clean.getJustification(), clean.getBibliography(), clean.getCompetence(),
+                clean.getTopic(), clean.getSubtopic(), clean.getDifficultyLevel(), current.getAuthorLogin());
+        factories.forType(current.getType())
+                .orElseThrow(() -> new BusinessException("No hay una fabrica para el tipo " + current.getType()))
+                .validate(data);
+
+        Question updated = Question.builder()
+                .id(current.getId())
+                .type(current.getType())
+                .fromRequest(data)
+                .createdAt(current.getCreatedAt())
+                .version(current.getVersion())
+                .revisedAt(current.getRevisedAt())
+                .status(current.getStatus())
+                .build();
+        if (!repository.update(updated)) {
+            throw new BusinessException("No fue posible guardar los cambios de la pregunta " + id + ".");
+        }
+        return updated;
+    }
+
+    /**
+     * HU02: Borrador -> Pendiente de revision (PSP-21).
+     *
+     * Solo el autor puede enviar su pregunta (si no, 403). La transicion la
+     * decide el patron State: solo un Borrador se puede enviar; en cualquier
+     * otro estado se lanza InvalidStateTransitionException (409). Al guardar
+     * se publica QuestionSubmittedForReviewEvent (question.submitted), que el
+     * review-service consume para que el administrador pueda asignar
+     * revisores (HU04).
+     */
+    public synchronized Question submitForReview(String id, String authorLogin) {
+        Question question = findById(id);
+        if (!question.isAuthoredBy(authorLogin == null ? null : authorLogin.trim())) {
+            throw new ForbiddenOperationException("Solo el autor de la pregunta puede enviarla a revision.");
+        }
+        question.submitForReview();
+        if (!repository.update(question)) {
+            throw new IllegalStateException("No fue posible guardar el cambio de estado de la pregunta " + id + ".");
+        }
+        eventBus.publish(new QuestionSubmittedForReviewEvent(question.getId(), question.getVersion(),
+                question.getAuthorLogin(), question.getDirectQuestion(), Instant.now()));
+        return question;
+    }
+
+    /**
+     * HU06: el autor saca una version mejorada de su pregunta Rechazada,
+     * despues de leer las observaciones del historial de revisiones.
+     *
+     * <ol>
+     *   <li>Solo el autor (403).</li>
+     *   <li>El contenido corregido pasa por la misma validacion estructural de
+     *       la fabrica del tipo (400 con todos los errores).</li>
+     *   <li>El patron State decide si se puede: solo desde Rechazada (409).</li>
+     *   <li>La version rechazada se archiva (historial) y la pregunta queda en
+     *       Borrador con el numero de version siguiente; el autor la envia de
+     *       nuevo a revision con HU02 y el review-service abre otra ronda.</li>
+     *   <li>Publica QuestionRevisedEvent (question.revised).</li>
+     * </ol>
+     */
+    public synchronized Question revise(String id, QuestionRequest request, String authorLogin) {
+        if (request == null) {
+            throw new BusinessException("Debe enviar el contenido de la version mejorada.");
+        }
+        Question current = findById(id);
+        if (!current.isAuthoredBy(authorLogin == null ? null : authorLogin.trim())) {
+            throw new ForbiddenOperationException("Solo el autor de la pregunta puede crear una version mejorada.");
+        }
+        if (!current.isRevisable()) {
+            throw new ConflictException("Solo se puede crear una version mejorada de una pregunta Rechazada. "
+                    + "Esta pregunta esta en " + current.getStatus().getLabel() + ".");
+        }
+
+        QuestionRequest clean = request.normalized();
+        QuestionRequest data = new QuestionRequest(current.getType(), clean.getContext(),
+                clean.getDirectQuestion(), clean.getDistractors(), clean.getCorrectAnswer(),
+                clean.getJustification(), clean.getBibliography(), clean.getCompetence(),
+                clean.getTopic(), clean.getSubtopic(), clean.getDifficultyLevel(), current.getAuthorLogin());
+        factories.forType(current.getType())
+                .orElseThrow(() -> new BusinessException("No hay una fabrica para el tipo " + current.getType()))
+                .validate(data);
+
+        LocalDateTime now = LocalDateTime.now();
+        QuestionVersion archived = current.snapshot(now);
+        Question revised = current.reviseWith(data, now);
+        if (!repository.saveVersion(archived) || !repository.update(revised)) {
+            throw new IllegalStateException("No fue posible guardar la version mejorada de la pregunta " + id + ".");
+        }
+        eventBus.publish(new QuestionRevisedEvent(revised.getId(), revised.getVersion(), revised.getAuthorLogin(),
+                revised.getDirectQuestion(), Instant.now()));
+        return revised;
+    }
+
+    /** HU06: versiones anteriores archivadas de la pregunta (la actual se consulta con findById). */
+    public List<QuestionVersion> versions(String id) {
+        findById(id);
+        return repository.findVersions(id);
+    }
+
+    /**
+     * HU05 (PSP-48): aplica el veredicto de un revisor, que llega en el evento
+     * review.evaluated del review-service.
+     *
+     * El patron State decide si la transicion es valida: solo una pregunta
+     * Pendiente de revision se puede aprobar o rechazar; en otro estado se
+     * lanza InvalidStateTransitionException.
+     *
+     * Es idempotente: RabbitMQ puede entregar el mismo evento mas de una vez,
+     * y si la pregunta ya tiene el estado del veredicto no se hace nada. Si el
+     * veredicto es de otra version (HU06), tambien se ignora.
+     *
+     * @return la pregunta con su estado final.
+     */
+    public synchronized Question applyEvaluation(QuestionEvaluatedEvent event) {
+        if (event == null || event.questionId() == null || event.verdict() == null) {
+            throw new BusinessException("El evento de evaluacion no trae la pregunta o el veredicto.");
+        }
+        Question question = findById(event.questionId());
+        if (event.questionVersion() != question.getVersion()) {
+            // HU06: veredicto atrasado de una version anterior (p. ej. reentregado por RabbitMQ):
+            // no debe cambiar el estado de la version actual.
+            return question;
+        }
+        boolean approve = event.verdict() == EvaluationVerdict.APROBADA;
+        QuestionStatus target = approve ? QuestionStatus.APROBADA : QuestionStatus.RECHAZADA;
+        if (question.getStatus() == target) {
+            return question;
+        }
+
+        if (approve) {
+            question.approve();
+        } else {
+            question.reject();
+        }
+        if (!repository.update(question)) {
+            throw new IllegalStateException("No fue posible guardar el nuevo estado de la pregunta "
+                    + question.getId() + ".");
+        }
+        return question;
+    }
+
+    /** Tipos de pregunta disponibles (fabricas cargadas por reflexion). */
+    public List<QuestionFactory> availableTypes() {
+        return factories.all();
+    }
+
+    private static String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value.trim();
+    }
+}

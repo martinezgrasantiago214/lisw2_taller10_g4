@@ -1,0 +1,17 @@
+digraph G {
+  graph [rankdir=TB, fontname="DejaVu Sans", fontsize=12, pad=0.3, nodesep=0.6, ranksep=0.8, label="C4 nivel 1 - Contexto (tercer corte)", labelloc=t];
+  node [shape=box, style="rounded,filled", fontname="DejaVu Sans", fontsize=11, color="#1F4E79", fontcolor=white, width=2.4];
+  edge [fontname="DejaVu Sans", fontsize=9, color="#555555"];
+  autor [label="Autor de preguntas\n[Persona]\nCrea, envia y corrige preguntas", fillcolor="#08427B"];
+  admin [label="Administrador\n[Persona]\nAsigna revisores", fillcolor="#08427B"];
+  rev [label="Revisor\n[Persona]\nEvalua preguntas", fillcolor="#08427B"];
+  sys [label="Banco de Preguntas Saber PRO\n[Sistema de software]\nGestion, revision por pares y\nversionado de preguntas", fillcolor="#1168BD", width=3.6, height=1.2];
+  kc [label="Keycloak\n[Sistema externo]\nIdentidad: usuarios, roles,\ntokens JWT (OAuth2 / OIDC)", fillcolor="#8C8C8C"];
+  smtp [label="Servidor de correo\n[Sistema externo]\nSMTP", fillcolor="#8C8C8C"];
+  autor -> sys [label="Usa (Swing)"]; admin -> sys [label="Usa"]; rev -> sys [label="Usa"];
+  autor -> kc [label="Inicia sesion", style=dashed]; admin -> kc [style=dashed]; rev -> kc [style=dashed];
+  sys -> kc [label="Valida tokens (JWKS)\nAdmin API de usuarios"];
+  sys -> smtp [label="Envia notificaciones"];
+  {rank=same; autor; admin; rev}
+  {rank=same; kc; smtp}
+}

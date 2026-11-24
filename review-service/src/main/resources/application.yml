@@ -1,0 +1,44 @@
+server:
+  port: ${PORT:8083}
+
+spring:
+  application:
+    name: review-service
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USER:guest}
+    password: ${RABBITMQ_PASSWORD:guest}
+  # Tercer corte: el servicio es un "resource server" OAuth2. Valida la firma del
+  # token con las llaves publicas del realm (JWKS), el emisor y la audiencia.
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${KEYCLOAK_ISSUER_URI:http://localhost:8180/realms/saberpro}
+          jwk-set-uri: ${KEYCLOAK_JWK_SET_URI:http://localhost:8180/realms/saberpro/protocol/openid-connect/certs}
+          audiences: saberpro-api
+
+saberpro:
+  # Base de datos propia del servicio (SQLite): revisiones, rondas, asignaciones y evaluaciones.
+  data-dir: ${SABERPRO_DATA_DIR:${user.home}/BancoPreguntasSaberPro}
+  # El review-service consulta el rol de cada revisor en el user-service (HU04).
+  user-service-url: ${USER_SERVICE_URL:http://localhost:8081}
+  security:
+    # Credenciales del servicio ante Keycloak (flujo client credentials) para llamar al user-service.
+    service-client:
+      token-uri: ${KEYCLOAK_TOKEN_URI:http://localhost:8180/realms/saberpro/protocol/openid-connect/token}
+      id: ${SERVICE_CLIENT_ID:saberpro-backend}
+      secret: ${SERVICE_CLIENT_SECRET:saberpro-backend-secret}
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
